@@ -18,6 +18,25 @@
     #map { height: 420px; border-radius: 0.75rem; z-index: 1; }
     .gpu-layer { transform: translateZ(0); backface-visibility: hidden; }
     .compass { display:inline-block; transition: transform .3s ease; }
+
+    /* ---- Readability pass: lift every small type size a notch.
+            !important wins over the Tailwind CDN's runtime-injected rules. ---- */
+    .text-\[10px\] { font-size: 12.5px !important; }
+    .text-\[11px\] { font-size: 13.5px !important; }
+    .text-xs      { font-size: 14px !important; }
+    .text-\[13px\] { font-size: 15px !important; }
+    .text-sm      { font-size: 15.5px !important; }
+    .text-base    { font-size: 17px !important; }
+    .text-xl      { font-size: 23px !important; }
+
+    /* Live beach camera */
+    .cam-live-dot { animation: camBlink 1.2s steps(2, start) infinite; }
+    @keyframes camBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.15; } }
+    .cam-scan { background: linear-gradient(to bottom, transparent, rgba(34,211,238,0.14), transparent);
+      animation: camScan 4.5s linear infinite; }
+    @keyframes camScan { 0% { transform: translateY(-100%); } 100% { transform: translateY(1200%); } }
+    #camCanvas { display:block; width:100%; height:100%; }
+    .cam-select { appearance: none; }
   </style>
 </head>
 
@@ -184,6 +203,46 @@
       </div>
     </div>
 
+    <!-- LIVE BEACH CAMERA -->
+    <div class="card-dark rounded-2xl p-4 space-y-3">
+      <div class="flex justify-between items-center flex-wrap gap-2">
+        <span class="text-xs font-semibold uppercase text-cyan-400">
+          <i class="fa-solid fa-video mr-1"></i> Live Beach Camera
+          <span class="text-[#8e9196] font-normal normal-case">(simulated coastal feed)</span>
+        </span>
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="flex items-center gap-1.5 bg-red-500/10 border border-red-500/40 text-red-300 px-2.5 py-1 rounded-full text-[11px] font-semibold">
+            <span class="w-2 h-2 rounded-full bg-red-500 cam-live-dot"></span> LIVE
+          </span>
+          <select id="camBeachSelect" onchange="onCameraBeachChange()" class="cam-select bg-[#1a1c1e] border border-[#2d3033] text-[11px] text-[#e3e2e6] rounded-full px-3 py-1.5 outline-none"></select>
+        </div>
+      </div>
+
+      <div class="relative rounded-xl overflow-hidden border border-[#2d3033] bg-black" style="aspect-ratio: 16 / 9;">
+        <canvas id="camCanvas" width="1280" height="720"></canvas>
+        <div class="absolute inset-0 pointer-events-none cam-scan"></div>
+        <div class="absolute top-0 left-0 right-0 p-3 flex justify-between items-start pointer-events-none">
+          <span class="text-[11px] font-mono text-white/90 bg-black/45 px-2 py-1 rounded-md border border-white/10">
+            <span class="text-red-400">&#9679;</span> <span id="camId">CAM-01</span> &middot; <span id="camName">--</span>
+          </span>
+          <span class="text-[11px] font-mono text-white/90 bg-black/45 px-2 py-1 rounded-md border border-white/10" id="camClock">--:--:-- IST</span>
+        </div>
+        <div class="absolute bottom-0 left-0 right-0 p-3 pointer-events-none">
+          <div class="bg-black/55 backdrop-blur-sm border border-white/10 rounded-lg px-3 py-2 flex flex-wrap gap-x-5 gap-y-1 text-[11px] font-mono text-white/90">
+            <span><i class="fa-solid fa-crosshairs text-cyan-300 mr-1"></i>Objects detected: <b id="camDetections">--</b></span>
+            <span><i class="fa-solid fa-triangle-exclamation text-amber-300 mr-1"></i>Debris risk: <b id="camRisk">--</b></span>
+            <span><i class="fa-solid fa-chart-line text-emerald-300 mr-1"></i>Predicted influx (6h): <b id="camPredict">--</b></span>
+            <span><i class="fa-solid fa-microchip text-cyan-300 mr-1"></i>Model confidence: <b id="camConf">--</b></span>
+          </div>
+        </div>
+      </div>
+      <p class="text-[11px] text-[#8e9196] leading-relaxed">
+        Simulated optical feed with an on-edge debris-detection overlay. Detection count, confidence and the
+        6-hour influx forecast are derived from the same hydrodynamic model as the risk cards &mdash; illustrative
+        for this demo, not a real camera or an official advisory.
+      </p>
+    </div>
+
     <!-- FOOTER -->
     <footer class="text-[10px] text-[#8e9196] font-mono border-t border-[#2d3033] pt-3 leading-relaxed">
       Live weather &amp; marine data: Open-Meteo (open-meteo.com). The risk % and debris load are a modelled
@@ -232,6 +291,9 @@
 
       // A broken CDN (Chart.js / Leaflet) must never stop the data pipeline.
       try { initChart(); } catch (e) { console.warn('Chart init skipped:', e); }
+
+      // Live beach camera (pure canvas simulation - independent of the CDNs).
+      try { initCamera(); } catch (e) { console.warn('Camera init skipped:', e); }
 
       // Watchdog: if nothing has updated the engine status, fall back to a static estimate.
       setTimeout(() => {
@@ -351,6 +413,8 @@
         const m = (mLoc[i] && mLoc[i].current) ? mLoc[i].current : {};
         return computeBeach(b, w, m);
       });
+      autoDispatch();                     // demo: crew status assigned from live risk, no clicks needed
+      beachData = beachData.map(applyDispatchRisk);
       region = buildRegion(beachData);
       forecastSeries = buildTrend(wLoc, mLoc);
     }
@@ -382,14 +446,15 @@
       const currentScore = 100 * Math.min(curV / 3, 1);
 
       let risk = 0.40 * waveScore + 0.28 * windScore + 0.14 * runoffScore + 0.10 * tideScore + 0.08 * currentScore;
-      if (dispatchStates[b.id] === 'CLEANED') risk *= 0.6;
-      risk = Math.max(5, Math.min(98, Math.round(risk)));
+      const baseRisk = Math.max(5, Math.min(98, Math.round(risk)));
+      risk = baseRisk;
+      if (dispatchStates[b.id] === 'CLEANED') risk = Math.max(5, Math.min(98, Math.round(baseRisk * 0.6)));
 
       const debris = Math.max(0, wavePower * 0.08 + runoff * 0.5 + onshoreWind * 0.01 + curV * 0.02);
 
       const rec = { ...b, Hs, T, waveDir, sst, curV, curD, tide, rain, precip, wind, windDir, gust, temp, hum,
         wavePower, onshoreWind, components: { waveScore, windScore, runoffScore, tideScore, currentScore },
-        risk, debris, factor: dominantDriver({ Hs, T, wind, windDir, zone: b.zone, tide, curV, components: { waveScore, windScore, runoffScore, tideScore, currentScore } }) };
+        baseRisk, risk, debris, factor: dominantDriver({ Hs, T, wind, windDir, zone: b.zone, tide, curV, components: { waveScore, windScore, runoffScore, tideScore, currentScore } }) };
       return rec;
     }
 
@@ -442,7 +507,7 @@
 
     /* ---------------------------- rendering ---------------------------- */
     function renderAll() {
-      renderFeeds(); updateMetrics(); renderCards(); updateMapMarkers(); updateChart();
+      renderFeeds(); updateMetrics(); renderCards(); updateMapMarkers(); updateChart(); updateCameraInfo();
       document.getElementById('aiSummary').innerText = localBriefing();
       document.getElementById('summarySource').innerText = 'local briefing';
     }
@@ -532,9 +597,7 @@
                 <strong class="text-[#c4c7c5]">Assessment:</strong> ${b.factor}
               </p>
             </div>
-            <button onclick="toggleDispatchStatus('${b.id}')" class="bg-[#24272a] hover:bg-[#313539] text-cyan-300 border border-[#313539] py-1.5 rounded-full text-xs font-medium transition">
-              Dispatch: ${st}
-            </button>
+            ${dispatchBadge(st)}
           </div>`;
       }).join('');
     }
@@ -548,21 +611,29 @@
       document.getElementById('activeDispatchCount').innerText = `${active} Active`;
     }
 
-    function toggleDispatchStatus(id) {
-      if (dispatchStates[id] === 'PENDING') dispatchStates[id] = 'CREW_EN_ROUTE';
-      else if (dispatchStates[id] === 'CREW_EN_ROUTE') dispatchStates[id] = 'CLEANED';
-      else dispatchStates[id] = 'PENDING';
+    /* --------------- automatic dispatch (demo mode) ------------------
+       No manual toggling: crew status is derived from the live modelled
+       risk every sync. HIGH  -> crew en route, MODERATE -> monitoring,
+       LOW (or post-clean) -> cleared. Purely a demo simulation.
+    ------------------------------------------------------------------ */
+    function autoDispatch() {
+      beachData.forEach(b => {
+        const r = b.baseRisk;
+        dispatchStates[b.id] = r >= 65 ? 'CREW_EN_ROUTE' : r >= 35 ? 'PENDING' : 'CLEANED';
+      });
+    }
+    // Apply the (mild) modelled benefit of a completed clean-up to the shown risk.
+    function applyDispatchRisk(b) {
+      let risk = b.baseRisk;
+      if (dispatchStates[b.id] === 'CLEANED') risk = Math.round(risk * 0.6);
+      risk = Math.max(5, Math.min(98, risk));
+      return { ...b, risk };
+    }
 
-      // Recompute locally (dispatch state affects the modelled risk) - no API call needed.
-      beachData = beachData.map(b => b.id === id ? computeBeach(b, {
-        temperature_2m: b.temp, relative_humidity_2m: b.hum, precipitation: b.precip, rain: b.rain,
-        wind_speed_10m: b.wind, wind_direction_10m: b.windDir, wind_gusts_10m: b.gust
-      }, {
-        wave_height: b.Hs, wave_period: b.T, wave_direction: b.waveDir, sea_surface_temperature: b.sst,
-        ocean_current_velocity: b.curV, ocean_current_direction: b.curD, sea_level_height_msl: b.tide
-      }) : b);
-      region = buildRegion(beachData);
-      renderAll();
+    function dispatchBadge(st) {
+      if (st === 'CREW_EN_ROUTE') return `<div class="flex items-center justify-between bg-amber-500/10 border border-amber-500/30 text-amber-300 py-1.5 px-3 rounded-full text-xs font-semibold"><span><i class="fa-solid fa-truck-fast mr-1.5"></i>CREW EN ROUTE</span><span class="text-[10px] font-mono opacity-70">AUTO</span></div>`;
+      if (st === 'CLEANED') return `<div class="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 py-1.5 px-3 rounded-full text-xs font-semibold"><span><i class="fa-solid fa-circle-check mr-1.5"></i>CLEARED</span><span class="text-[10px] font-mono opacity-70">AUTO</span></div>`;
+      return `<div class="flex items-center justify-between bg-[#24272a] border border-[#313539] text-[#c4c7c5] py-1.5 px-3 rounded-full text-xs font-semibold"><span><i class="fa-solid fa-satellite-dish mr-1.5"></i>MONITORING</span><span class="text-[10px] font-mono opacity-70">AUTO</span></div>`;
     }
 
     function switchView(viewName) {
@@ -625,6 +696,129 @@
       const on = document.getElementById('autoRefresh').checked;
       if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
       if (on) autoRefreshTimer = setInterval(syncAllData, 10 * 60 * 1000);
+    }
+
+    /* ----------------------- live beach camera -----------------------
+       A canvas-simulated optical feed: animated surf whose amplitude and
+       debris count track the selected beach's live modelled risk. The
+       on-edge detection overlay and 6h influx forecast are derived from
+       the same numbers as the cards. Illustrative only.
+    ------------------------------------------------------------------ */
+    let camCanvas, camCtx, camAnimId = null, camT = 0, camDebris = [], camSelectedId = null;
+    const CAM_W = 1280, CAM_H = 720;
+
+    function initCamera() {
+      camCanvas = document.getElementById('camCanvas');
+      if (!camCanvas) return;
+      camCtx = camCanvas.getContext('2d');
+      camSelectedId = GOA_BEACHES[0].id;
+      const sel = document.getElementById('camBeachSelect');
+      sel.innerHTML = GOA_BEACHES.map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+      sel.value = camSelectedId;
+      updateCamClock();
+      setInterval(updateCamClock, 1000);
+      if (!camAnimId) camLoop();
+    }
+    function onCameraBeachChange() {
+      camSelectedId = document.getElementById('camBeachSelect').value;
+      rebuildCamDebris();
+      updateCameraInfo();
+    }
+    function camBeach() { return beachData.find(b => b.id === camSelectedId) || null; }
+    function updateCamClock() {
+      const el = document.getElementById('camClock');
+      if (el) el.innerText = new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' }) + ' IST';
+    }
+    function camDayPhase() {
+      const h = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }).format(new Date()));
+      return (h >= 6 && h < 18) ? 'day' : (h >= 18 && h < 20 ? 'dusk' : 'night');
+    }
+    function rebuildCamDebris() {
+      const b = camBeach();
+      const risk = b ? b.risk : 20;
+      const count = Math.max(2, Math.round(risk / 8));
+      camDebris = [];
+      for (let i = 0; i < count; i++) {
+        camDebris.push({
+          x: Math.random() * CAM_W, y: CAM_H * 0.62 + Math.random() * CAM_H * 0.28,
+          size: 14 + Math.random() * 22, speed: 8 + Math.random() * 26, drift: (Math.random() - 0.5) * 6,
+          conf: 0.62 + Math.random() * 0.36,
+          kind: ['Plastic bottle', 'Wrapper', 'Foam fragment', 'Fishing net', 'Bag'][Math.floor(Math.random() * 5)]
+        });
+      }
+    }
+    function camLoop() { camT += 1 / 60; drawCamScene(); camAnimId = requestAnimationFrame(camLoop); }
+    function drawCamScene() {
+      const ctx = camCtx; if (!ctx) return;
+      const phase = camDayPhase();
+      const b = camBeach(); const risk = b ? b.risk : 25;
+
+      const sky = ctx.createLinearGradient(0, 0, 0, CAM_H * 0.6);
+      if (phase === 'day') { sky.addColorStop(0, '#8ec9e8'); sky.addColorStop(1, '#d9eef7'); }
+      else if (phase === 'dusk') { sky.addColorStop(0, '#33405e'); sky.addColorStop(1, '#e79a6a'); }
+      else { sky.addColorStop(0, '#0b1224'); sky.addColorStop(1, '#1b2740'); }
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, CAM_W, CAM_H * 0.6);
+
+      ctx.beginPath();
+      ctx.arc(CAM_W * 0.78, CAM_H * (phase === 'night' ? 0.16 : 0.2), 34, 0, Math.PI * 2);
+      ctx.fillStyle = phase === 'night' ? '#e8edf7' : (phase === 'dusk' ? '#ffb15c' : '#fff4c2');
+      ctx.fill();
+
+      const sea = ctx.createLinearGradient(0, CAM_H * 0.6, 0, CAM_H);
+      if (phase === 'night') { sea.addColorStop(0, '#0a2230'); sea.addColorStop(1, '#05141d'); }
+      else { sea.addColorStop(0, '#1f7fa8'); sea.addColorStop(1, '#0e3f57'); }
+      ctx.fillStyle = sea; ctx.fillRect(0, CAM_H * 0.6, CAM_W, CAM_H * 0.4);
+
+      const amp = 6 + risk * 0.14;
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 3;
+      for (let row = 0; row < 6; row++) {
+        const yBase = CAM_H * 0.62 + row * (CAM_H * 0.06);
+        ctx.beginPath();
+        for (let x = 0; x <= CAM_W; x += 16) {
+          const y = yBase + Math.sin((x * 0.012) + camT * (1.2 + row * 0.2) + row) * amp;
+          x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      ctx.fillStyle = phase === 'night' ? 'rgba(90,80,70,0.35)' : 'rgba(214,196,160,0.35)';
+      ctx.fillRect(0, CAM_H * 0.94, CAM_W, CAM_H * 0.06);
+
+      camDebris.forEach((d, i) => {
+        d.x -= d.speed / 60; d.y += d.drift / 60;
+        if (d.x < -40) { d.x = CAM_W + 40; d.y = CAM_H * 0.62 + Math.random() * CAM_H * 0.3; }
+        const dy = d.y + Math.sin(camT * 2 + i) * 3;
+        ctx.save(); ctx.translate(d.x, dy);
+        ctx.fillStyle = ['#d9c27a', '#b7d1e0', '#c8c8c8', '#9fd3b0', '#e0b0c0'][i % 5];
+        ctx.beginPath(); ctx.ellipse(0, 0, d.size * 0.7, d.size * 0.4, 0.3, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        const bw = d.size * 1.7, bh = d.size * 1.2;
+        ctx.strokeStyle = d.conf > 0.8 ? 'rgba(34,211,238,0.95)' : 'rgba(245,158,11,0.95)';
+        ctx.lineWidth = 2; ctx.strokeRect(d.x - bw / 2, dy - bh / 2, bw, bh);
+        const label = `${d.kind} ${Math.round(d.conf * 100)}%`;
+        ctx.font = '600 20px monospace';
+        const tw = ctx.measureText(label).width + 16;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(d.x - bw / 2, dy - bh / 2 - 26, tw, 24);
+        ctx.fillStyle = d.conf > 0.8 ? '#22d3ee' : '#f59e0b';
+        ctx.fillText(label, d.x - bw / 2 + 8, dy - bh / 2 - 8);
+      });
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1;
+      for (let x = 0; x <= CAM_W; x += CAM_W / 12) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, CAM_H); ctx.stroke(); }
+      for (let y = 0; y <= CAM_H; y += CAM_H / 7) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(CAM_W, y); ctx.stroke(); }
+    }
+    function updateCameraInfo() {
+      const b = camBeach();
+      const nameEl = document.getElementById('camName');
+      const idEl = document.getElementById('camId');
+      if (nameEl) nameEl.innerText = b ? b.name : '--';
+      if (idEl && b) idEl.innerText = 'CAM-' + String(GOA_BEACHES.findIndex(x => x.id === b.id) + 1).padStart(2, '0');
+      if (!b) return;
+      const desired = Math.max(2, Math.round(b.risk / 8));
+      if (camDebris.length !== desired) rebuildCamDebris();
+      document.getElementById('camDetections').innerText = camDebris.length + ' obj';
+      document.getElementById('camRisk').innerText = b.risk + '%';
+      document.getElementById('camPredict').innerText = (b.debris * 6).toFixed(2) + ' t';
+      document.getElementById('camConf').innerText = Math.min(97, Math.round((0.55 + b.risk / 200) * 100)) + '%';
     }
 
     /* --------------- optional Groq narrative layer --------------------
